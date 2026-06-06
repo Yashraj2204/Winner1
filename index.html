@@ -1234,7 +1234,7 @@
         try {
           const raw = localStorage.getItem(key);
           return raw !== null ? JSON.parse(raw) : fallback;
-        } catch (err) {
+        } catch {
           return fallback;
         }
       },
@@ -1247,7 +1247,7 @@
       set(key, value) {
         try {
           localStorage.setItem(key, JSON.stringify(value));
-        } catch (err) {
+        } catch {
           // Fail silently
         }
       },
@@ -1262,7 +1262,7 @@
         try {
           const raw = localStorage.getItem(key);
           return raw !== null ? raw : fallback;
-        } catch (err) {
+        } catch {
           return fallback;
         }
       },
@@ -1275,7 +1275,7 @@
       setString(key, value) {
         try {
           localStorage.setItem(key, value);
-        } catch (err) {
+        } catch {
           // Fail silently
         }
       }
@@ -1319,7 +1319,7 @@
         this.listeners.forEach(listener => {
           try {
             listener(this);
-          } catch (err) {
+          } catch {
             // Do not let listener errors block notify loop
           }
         });
@@ -1745,9 +1745,8 @@
 
       /**
        * Component state updater (none required).
-       * @param {AuraState} state - The global application state.
        */
-      update(state) {
+      update() {
         // No direct states to sync from global state
       }
     }
@@ -1906,7 +1905,7 @@
       _attachTooltipEvents() {
         const points = this.viewport.querySelectorAll('.chart-point');
         points.forEach(pt => {
-          const showTip = (e) => {
+          const showTip = () => {
             const rect = pt.getBoundingClientRect();
             const containerRect = this.viewport.getBoundingClientRect();
             const content = pt.getAttribute('data-tooltip');
@@ -2119,9 +2118,8 @@
 
       /**
        * Updates breathing component (none required as self-contained state).
-       * @param {AuraState} state - The global application state.
        */
-      update(state) {
+      update() {
         // Self-contained logic
       }
     }
@@ -2169,9 +2167,8 @@
 
       /**
        * Updates the theme component (none needed as state persists on DOM/Storage).
-       * @param {AuraState} state - The global application state.
        */
-      update(state) {
+      update() {
         // Theme states persist on body classes dynamically
       }
     }
@@ -2296,7 +2293,7 @@
           this.whiteNoiseNode.start();
           this.lfoNode.start();
 
-        } catch (e) {
+        } catch {
           this.statusText.textContent = 'Audio blocked by browser. Press Play to trigger.';
           this.statusText.style.color = 'var(--error-color)';
           this.isPlaying = false;
@@ -2335,19 +2332,18 @@
           }
           if (this.oscs && this.oscs.length > 0) {
             this.oscs.forEach(osc => {
-              try { osc.stop(); } catch(e){}
+              try { osc.stop(); } catch { /* ignore */ }
               osc.disconnect();
             });
             this.oscs = [];
           }
-        } catch (e) {}
+        } catch { /* ignore */ }
       }
 
       /**
        * Updates the soundscape component (none needed as it is a self-contained controller).
-       * @param {AuraState} state - The global application state.
        */
-      update(state) {
+      update() {
         // self contained audio controller
       }
     }
@@ -2392,7 +2388,7 @@
         };
         history.forEach(e => {
           e.triggers.forEach(t => {
-            if (triggerCounts.hasOwnProperty(t)) {
+            if (t in triggerCounts) {
               triggerCounts[t]++;
             }
           });
@@ -2735,27 +2731,37 @@
 
     // --- EXECUTE RUNNER ---
     async function execute() {
-      console.log("%c[TEST RUNNER] Starting Aura wellness application test suite...", "font-weight: bold; color: #1e3a8a;");
+      const logs = [];
       let passed = 0;
       let failed = 0;
 
       for (const t of tests) {
         try {
           await t.testFn();
-          console.log(`%c✔ ${t.name} - PASSED`, "color: #047857; font-weight: 500;");
+          logs.push(`✔ ${t.name} - PASSED`);
           passed++;
         } catch (e) {
-          console.error(`%c✘ ${t.name} - FAILED`, "color: #b91c1c; font-weight: 700;");
-          console.error(e);
+          logs.push(`✘ ${t.name} - FAILED: ${e.message}`);
           failed++;
         }
       }
 
-      const summaryColor = failed === 0 ? "color: #047857;" : "color: #b91c1c;";
-      console.log(
-        `%c[TEST RUNNER] All tests completed: ${passed}/${passed + failed} PASSED.`,
-        `font-weight: bold; ${summaryColor}`
-      );
+      logs.push(`All tests completed: ${passed}/${passed + failed} PASSED.`);
+
+      // Store in window for automated checkers
+      window.__AURA_TEST_RESULTS__ = {
+        passed,
+        failed,
+        logs
+      };
+
+      // Append to an invisible DOM element for test report parsing
+      const diagnostics = document.createElement('div');
+      diagnostics.id = 'test-diagnostics';
+      diagnostics.style.display = 'none';
+      diagnostics.setAttribute('aria-hidden', 'true');
+      diagnostics.textContent = logs.join('\n');
+      document.body.appendChild(diagnostics);
     }
 
     execute();
@@ -2770,7 +2776,7 @@
           // Instantiates test block
           const runTests = new Function(testElement.textContent);
           runTests();
-        } catch (err) {
+        } catch {
           // Silent test initialization errors
         }
       }
