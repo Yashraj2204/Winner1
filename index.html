@@ -985,7 +985,7 @@
             <!-- Mood Emoji Selection -->
             <div class="form-group">
               <span id="mood-selector-label" class="sr-only">Select your mood on a 5 level scale</span>
-              <div class="mood-selector" role="radiogroup" aria-labelledby="mood-selector-label">
+              <div class="mood-selector" role="radiogroup" aria-labelledby="mood-selector-label" aria-describedby="mood-error">
                 <button type="button" class="mood-option-btn" role="radio" aria-checked="false" data-score="1" aria-label="1 out of 5: Very Low mood">
                   <span class="emoji" aria-hidden="true">😢</span>
                   <span class="mood-label">Very Low</span>
@@ -1053,7 +1053,7 @@
             <!-- Context Notes -->
             <div class="form-group">
               <label for="note-input">Optional Reflection Note</label>
-              <textarea id="note-input" class="text-input" placeholder="What is happening? Express your thoughts briefly..." maxlength="300"></textarea>
+              <textarea id="note-input" class="text-input" placeholder="What is happening? Express your thoughts briefly..." maxlength="300" aria-describedby="note-error"></textarea>
               <div class="form-error" id="note-error" role="alert">Note is too long (limit 300 chars).</div>
             </div>
 
@@ -1173,22 +1173,25 @@
        APPLICATION LOGIC & CODE (Embedded Script)
        ---------------------------------------------------- */ -->
   <script>
+    'use strict';
+
     // ----------------------------------------------------
     // CONSTANTS & STRINGS CONFIG
     // ----------------------------------------------------
-    const APP_CONFIG = {
+    const APP_CONFIG = Object.freeze({
       LOCAL_STORAGE_KEY: 'aura_wellness_data',
       EXAM_STORAGE_KEY: 'aura_exam_type',
+      THEME_STORAGE_KEY: 'aura_theme',
       NOTE_MAX_LENGTH: 300,
       MOCK_API_FAILURE_RATE: 0.1, // 10% failure chance for error handling validation
-      MOODS: {
-        1: { emoji: '😢', label: 'Very Low', score: 1 },
-        2: { emoji: '🙁', label: 'Low', score: 2 },
-        3: { emoji: '😐', label: 'Neutral', score: 3 },
-        4: { emoji: '🙂', label: 'Good', score: 4 },
-        5: { emoji: '😊', label: 'Excellent', score: 5 }
-      },
-      TIPS_DATABASE: {
+      MOODS: Object.freeze({
+        1: Object.freeze({ emoji: '😢', label: 'Very Low', score: 1 }),
+        2: Object.freeze({ emoji: '🙁', label: 'Low', score: 2 }),
+        3: Object.freeze({ emoji: '😐', label: 'Neutral', score: 3 }),
+        4: Object.freeze({ emoji: '🙂', label: 'Good', score: 4 }),
+        5: Object.freeze({ emoji: '😊', label: 'Excellent', score: 5 })
+      }),
+      TIPS_DATABASE: Object.freeze({
         examStress: "Anxiety before mock tests or major exams is very common. Break down today's topics into short, focused Pomodoro blocks. Rest your mind between subjects.",
         sleepDeprivation: "Consolidating formulas and theories happens during deep REM sleep. Sacrificing sleep for cramming decreases recall efficiency. Prioritize 7-8 hours of sleep.",
         familyPressure: "High expectations can feel heavy. Try having a calm talk with family about your plan, or focus strictly on controlling your day's efforts, not external outcomes.",
@@ -1197,59 +1200,182 @@
         physicalHealth: "Physical stress fuels mental fatigue. Take a 15-minute quick walk or do light stretches. Drink sufficient water during studies.",
         generalHappy: "Your mood pattern is stable. Maintain this positive momentum. Help a peer study or take time to reward yourself.",
         generalLow: "It is okay to have low energy days. Be gentle with yourself. Focus on completing just one small, manageable task today."
+      }),
+      AUDIO: Object.freeze({
+        NOISE_GAIN: 0.15,
+        LFO_FREQ: 0.08,
+        LFO_GAIN: 250, // Sweep range (+/- 250Hz)
+        DRONE_FREQS: Object.freeze([110.0, 164.81, 220.0]), // A minor chords: A2, E3, A3
+        DRONE_GAIN: 0.015,
+        FILTER_FREQ: 350,
+        FILTER_Q: 1.0,
+        BUFFER_DURATION: 2 // 2 seconds
+      }),
+      VALID_TRIGGERS: Object.freeze(['study', 'sleep', 'family', 'exam', 'peer', 'health']),
+      VALID_EXAMS: Object.freeze(['General', 'JEE', 'NEET', 'UPSC', 'CAT', 'GATE'])
+    });
+
+    // ----------------------------------------------------
+    // STORAGE SERVICE (localStorage Abstraction)
+    // ----------------------------------------------------
+    /**
+     * StorageService encapsulates all interaction with localStorage.
+     * It handles serialization/deserialization and includes fallback operations
+     * when localStorage is blocked or throws exceptions.
+     */
+    const StorageService = {
+      /**
+       * Fetches and parses a JSON item from localStorage.
+       * @param {string} key - The localStorage key.
+       * @param {*} fallback - The fallback value if key does not exist or parsing fails.
+       * @returns {*} The parsed item or fallback value.
+       */
+      get(key, fallback) {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw !== null ? JSON.parse(raw) : fallback;
+        } catch (err) {
+          return fallback;
+        }
+      },
+
+      /**
+       * Serializes and writes an item to localStorage.
+       * @param {string} key - The localStorage key.
+       * @param {*} value - The value to store.
+       */
+      set(key, value) {
+        try {
+          localStorage.setItem(key, JSON.stringify(value));
+        } catch (err) {
+          // Fail silently
+        }
+      },
+
+      /**
+       * Fetches a plain string item from localStorage.
+       * @param {string} key - The localStorage key.
+       * @param {string} fallback - The fallback value if key does not exist.
+       * @returns {string} The string value or fallback.
+       */
+      getString(key, fallback) {
+        try {
+          const raw = localStorage.getItem(key);
+          return raw !== null ? raw : fallback;
+        } catch (err) {
+          return fallback;
+        }
+      },
+
+      /**
+       * Writes a plain string item to localStorage.
+       * @param {string} key - The localStorage key.
+       * @param {string} value - The value to store.
+       */
+      setString(key, value) {
+        try {
+          localStorage.setItem(key, value);
+        } catch (err) {
+          // Fail silently
+        }
       }
     };
 
     // ----------------------------------------------------
     // APP STATE MANAGER (Observer Pattern)
     // ----------------------------------------------------
+    /**
+     * AuraState manages the application's central reactive state,
+     * including user check-ins, the current exam category, and streak calculation.
+     */
     class AuraState {
+      /**
+       * Creates an instance of AuraState.
+       */
       constructor() {
+        /** @type {Function[]} */
         this.listeners = [];
+        /** @type {Object[]} */
         this.entries = this._loadEntries();
+        /** @type {string} */
         this.currentExam = this._loadExam();
+        /** @type {number} */
         this.streak = this._calculateStreak();
       }
 
+      /**
+       * Subscribes a listener function to state changes and calls it immediately with the current state.
+       * @param {Function} listener - Callback function executed on state updates.
+       */
       subscribe(listener) {
         this.listeners.push(listener);
-        // Fire immediately for initial state
         listener(this);
       }
 
+      /**
+       * Notifies all subscribed listeners of changes.
+       */
       notify() {
-        this.listeners.forEach(listener => listener(this));
+        this.listeners.forEach(listener => {
+          try {
+            listener(this);
+          } catch (err) {
+            // Do not let listener errors block notify loop
+          }
+        });
       }
 
+      /**
+       * Loads entries from storage.
+       * @private
+       * @returns {Object[]} Loaded entries array.
+       */
       _loadEntries() {
-        try {
-          const raw = localStorage.getItem(APP_CONFIG.LOCAL_STORAGE_KEY);
-          return raw ? JSON.parse(raw) : [];
-        } catch {
-          return [];
-        }
+        return StorageService.get(APP_CONFIG.LOCAL_STORAGE_KEY, []);
       }
 
+      /**
+       * Saves current entries to storage.
+       * @private
+       */
       _saveEntries() {
-        try {
-          localStorage.setItem(APP_CONFIG.LOCAL_STORAGE_KEY, JSON.stringify(this.entries));
-        } catch {
-          // Silent localstorage fail handle
-        }
+        StorageService.set(APP_CONFIG.LOCAL_STORAGE_KEY, this.entries);
       }
 
+      /**
+       * Loads exam preference from storage.
+       * @private
+       * @returns {string} Exam category.
+       */
       _loadExam() {
-        return localStorage.getItem(APP_CONFIG.EXAM_STORAGE_KEY) || 'General';
+        const raw = StorageService.getString(APP_CONFIG.EXAM_STORAGE_KEY, 'General');
+        return APP_CONFIG.VALID_EXAMS.includes(raw) ? raw : 'General';
       }
 
+      /**
+       * Updates the active exam type and alerts subscribers.
+       * @param {string} examName - The name of the exam.
+       */
       setExam(examName) {
+        if (!APP_CONFIG.VALID_EXAMS.includes(examName)) {
+          throw new Error("Invalid exam category selected");
+        }
         this.currentExam = examName;
-        try {
-          localStorage.setItem(APP_CONFIG.EXAM_STORAGE_KEY, examName);
-        } catch {}
+        StorageService.setString(APP_CONFIG.EXAM_STORAGE_KEY, examName);
         this.notify();
       }
 
+      /**
+       * Adds a new check-in entry or replaces an existing entry for the current calendar day.
+       * Also updates the current streak count and persistence layer.
+       * @param {Object} entryData - The data of the entry to add.
+       * @param {number} entryData.score - Mood score from 1 to 5.
+       * @param {string[]} entryData.triggers - Array of stress trigger strings.
+       * @param {number} entryData.stressLevel - Stress level from 1 to 10.
+       * @param {string} [entryData.note] - Optional written reflection.
+       * @param {number|Date} [entryData.timestamp] - Optional custom timestamp (mostly for backdated entries or testing).
+       * @throws {Error} If score, stressLevel, or note length is invalid.
+       */
       addEntry({ score, triggers, stressLevel, note, timestamp }) {
         // Validation boundary
         if (!score || score < 1 || score > 5) {
@@ -1271,12 +1397,17 @@
           String(now.getDate()).padStart(2, '0')
         ].join('-');
 
+        // Input validation and allowlist filtering for triggers
+        const validTriggersSet = new Set(APP_CONFIG.VALID_TRIGGERS);
+        const filteredTriggers = (Array.isArray(triggers) ? triggers : [])
+          .filter(t => validTriggersSet.has(t));
+
         const entry = {
           id: now.getTime().toString(),
           timestamp: now.getTime(),
           dateString: localDateStr,
           score,
-          triggers: Array.isArray(triggers) ? triggers : [],
+          triggers: filteredTriggers,
           stressLevel,
           note: note ? note.trim() : ''
         };
@@ -1292,11 +1423,20 @@
         this.notify();
       }
 
+      /**
+       * Returns the last 7 entries sorted chronologically.
+       * @returns {Object[]} The 7-day mood logs.
+       */
       get7DayHistory() {
         // Return last 7 entries
         return this.entries.slice(-7);
       }
 
+      /**
+       * Calculates the user's consecutive daily check-in streak based on local calendar dates.
+       * @private
+       * @returns {number} Current streak count in days.
+       */
       _calculateStreak() {
         if (this.entries.length === 0) return 0;
 
@@ -1348,7 +1488,17 @@
     // ----------------------------------------------------
     // MOCK AI PERSISTENT ADVICE SERVICE
     // ----------------------------------------------------
+    /**
+     * Service to mock personalized AI mental wellness analysis and tips.
+     * Simulates network latency and failure rates for robustness testing.
+     */
     class MockAIService {
+      /**
+       * Analyzes the 7-day user history and returns a custom advice tip and exam context.
+       * @param {Object[]} history - The user's weekly mood logs.
+       * @param {string} currentExam - The exam track selected by the user.
+       * @returns {Promise<{tip: string, examContext: string}>} Simulated recommendation output.
+       */
       static async analyzeAndGetTip(history, currentExam) {
         return new Promise((resolve, reject) => {
           setTimeout(() => {
@@ -1367,14 +1517,18 @@
             }
 
             // Gather insights
-            const lastEntry = history[history.length - 1];
             const recentTriggers = history.flatMap(e => e.triggers);
             const avgMood = history.reduce((sum, e) => sum + e.score, 0) / history.length;
 
             // Trigger frequency counts
             const counts = {};
             recentTriggers.forEach(t => { counts[t] = (counts[t] || 0) + 1; });
-            const topTrigger = Object.keys(counts).reduce((a, b) => counts[a] > counts[b] ? a : b, null);
+
+            // Safely retrieve top trigger (avoiding null initialization comparison)
+            const keys = Object.keys(counts);
+            const topTrigger = keys.length > 0
+              ? keys.reduce((a, b) => counts[a] > counts[b] ? a : b)
+              : '';
 
             let message = "";
             let examTip = "";
@@ -1419,7 +1573,14 @@
     // ----------------------------------------------------
 
     // 1. HEADER COMPONENT
+    /**
+     * HeaderComponent manages the application header updates,
+     * including active exam track selection and streak representation.
+     */
     class HeaderComponent {
+      /**
+       * Creates an instance of HeaderComponent.
+       */
       constructor() {
         this.examSelector = document.getElementById('exam-selector');
         this.streakCount = document.getElementById('streak-count');
@@ -1430,6 +1591,10 @@
         });
       }
 
+      /**
+       * Updates the Header components with current exam type and streak value.
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         if (this.examSelector.value !== state.currentExam) {
           this.examSelector.value = state.currentExam;
@@ -1440,7 +1605,14 @@
     }
 
     // 2. MOOD CHECK-IN & STRESS LOGGER FORM
+    /**
+     * FormComponent handles checking in daily moods and logging stress levels and triggers.
+     * Contains validation logic and manages custom form elements.
+     */
     class FormComponent {
+      /**
+       * Creates an instance of FormComponent.
+       */
       constructor() {
         this.form = document.getElementById('wellness-form');
         this.moodButtons = document.querySelectorAll('.mood-option-btn');
@@ -1475,6 +1647,14 @@
         this.form.addEventListener('submit', (e) => this.handleSubmit(e));
       }
 
+      /**
+       * Handles selected mood emoji styling and stores the score.
+       * @param {HTMLElement} button - The button clicked/interacted with.
+       */
+      /**
+       * Handles selected mood emoji styling and stores the score.
+       * @param {HTMLElement} button - The button clicked/interacted with.
+       */
       selectMood(button) {
         this.moodButtons.forEach(btn => {
           btn.classList.remove('selected');
@@ -1484,29 +1664,61 @@
         button.setAttribute('aria-checked', 'true');
         this.selectedScore = parseInt(button.getAttribute('data-score'));
         this.moodError.style.display = 'none';
+
+        const selector = document.querySelector('.mood-selector');
+        if (selector) {
+          selector.removeAttribute('aria-invalid');
+        }
       }
 
+      /**
+       * Handles submit event, executes basic validation, collects input values, and dispatches data to AuraState.
+       * @param {Event} e - Submit event.
+       */
       handleSubmit(e) {
         e.preventDefault();
         let isValid = true;
+        let firstInvalidElement = null;
 
-        // Reset errors
+        // Reset errors and invalid flags
         this.moodError.style.display = 'none';
         this.noteError.style.display = 'none';
+
+        const moodSelector = document.querySelector('.mood-selector');
+        if (moodSelector) {
+          moodSelector.removeAttribute('aria-invalid');
+        }
+        this.noteInput.removeAttribute('aria-invalid');
 
         // Validate mood
         if (!this.selectedScore) {
           this.moodError.style.display = 'block';
+          if (moodSelector) {
+            moodSelector.setAttribute('aria-invalid', 'true');
+          }
+          if (this.moodButtons.length > 0) {
+            firstInvalidElement = this.moodButtons[0];
+          }
           isValid = false;
         }
 
         // Validate note length
         if (this.noteInput.value.length > APP_CONFIG.NOTE_MAX_LENGTH) {
           this.noteError.style.display = 'block';
+          this.noteInput.setAttribute('aria-invalid', 'true');
+          if (!firstInvalidElement) {
+            firstInvalidElement = this.noteInput;
+          }
           isValid = false;
         }
 
-        if (!isValid) return;
+        // Focus invalid element if validation failed
+        if (!isValid) {
+          if (firstInvalidElement) {
+            firstInvalidElement.focus();
+          }
+          return;
+        }
 
         // Gather stress triggers
         const checkedTriggers = Array.from(document.querySelectorAll('input[name="triggers"]:checked'))
@@ -1531,12 +1743,20 @@
         this.stressSlider.setAttribute('aria-valuenow', '5');
       }
 
+      /**
+       * Component state updater (none required).
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         // No direct states to sync from global state
       }
     }
 
     // 3. RESPONSIVE CUSTOM SVG CHART COMPONENT
+    /**
+     * ChartComponent renders a responsive SVG weekly mood trend graph.
+     * Handles window resize events to redraw charts.
+     */
     class ChartComponent {
       constructor() {
         this.viewport = document.getElementById('chart-viewport');
@@ -1547,10 +1767,18 @@
         });
       }
 
+      /**
+       * Updates the chart component when state changes.
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         this.drawChart(state.get7DayHistory());
       }
 
+      /**
+       * Renders the line graph inside the SVG viewport using 7-day user history.
+       * @param {Object[]} history - Array of weekly check-in entries.
+       */
       drawChart(history) {
         if (!history || history.length === 0) {
           this.viewport.innerHTML = `
@@ -1671,6 +1899,10 @@
         this._attachTooltipEvents();
       }
 
+      /**
+       * Attaches event listeners to chart data points to display dynamic tooltips on hover or focus.
+       * @private
+       */
       _attachTooltipEvents() {
         const points = this.viewport.querySelectorAll('.chart-point');
         points.forEach(pt => {
@@ -1698,6 +1930,10 @@
     }
 
     // 4. AI RECOMMENDATIONS WITH LOADING & ERROR BOUNDARY WIDGET
+    /**
+     * AITipsComponent retrieves and manages dynamic AI-based wellness tips.
+     * Implements async loading placeholders (shimmers) and error boundary fallback with retry capability.
+     */
     class AITipsComponent {
       constructor() {
         this.container = document.getElementById('ai-tips-content');
@@ -1705,6 +1941,10 @@
         this.lastExam = null;
       }
 
+      /**
+       * Subscribes to changes in history and exam, triggering analysis if state has modified.
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         const history = state.get7DayHistory();
         const currentExam = state.currentExam;
@@ -1720,6 +1960,11 @@
         this.fetchAITip(history, currentExam);
       }
 
+      /**
+       * Asynchronously calls MockAIService to load tips, updating container with success or error views.
+       * @param {Object[]} history - Weekly mood history.
+       * @param {string} exam - Current exam track target.
+       */
       async fetchAITip(history, exam) {
         this.renderLoading();
 
@@ -1731,6 +1976,9 @@
         }
       }
 
+      /**
+       * Renders the loading shimmer elements.
+       */
       renderLoading() {
         this.container.innerHTML = `
           <div class="ai-loading-container" role="status" aria-live="polite">
@@ -1741,18 +1989,28 @@
           </div>`;
       }
 
+      /**
+       * Renders the successful advice tip.
+       * @param {string} tip - The wellness advice text.
+       * @param {string} exam - Target exam track context.
+       */
       renderSuccess(tip, exam) {
         this.container.innerHTML = `
           <div class="ai-tip-card">
-            <p>${tip}</p>
-            <span class="ai-tip-meta">Insight target: ${exam} prep</span>
+            <p>${escapeHTML(tip)}</p>
+            <span class="ai-tip-meta">Insight target: ${escapeHTML(exam)} prep</span>
           </div>`;
       }
 
+      /**
+       * Renders the error boundary view with a retry trigger.
+       * @param {string} message - Error details.
+       * @param {Function} retryCallback - Retry handler logic.
+       */
       renderError(message, retryCallback) {
         this.container.innerHTML = `
           <div class="error-boundary" role="alert">
-            <p><strong>System Exception:</strong> ${message}</p>
+            <p><strong>System Exception:</strong> ${escapeHTML(message)}</p>
             <button type="button" class="btn-retry" id="btn-ai-retry">Retry Connection</button>
           </div>`;
 
@@ -1761,6 +2019,10 @@
     }
 
     // 5. BOX BREATHING EXERCISE WIDGET
+    /**
+     * BreathingComponent coordinates box breathing exercises (Inhale -> Hold -> Exhale -> Hold),
+     * rendering interactive pulsing guides and screen-reader status announcements.
+     */
     class BreathingComponent {
       constructor() {
         this.circle = document.getElementById('breathing-circle');
@@ -1787,6 +2049,9 @@
         this.btnStop.addEventListener('click', () => this.stopSession());
       }
 
+      /**
+       * Commences the interactive box breathing cycles.
+       */
       startSession() {
         if (this.isPlaying) return;
         this.isPlaying = true;
@@ -1804,6 +2069,9 @@
         this.runCycle();
       }
 
+      /**
+       * Runs consecutive 1-second ticks of a breathing cycle phase, updating dimensions/colors and looping.
+       */
       runCycle() {
         if (!this.isPlaying) return;
 
@@ -1828,6 +2096,9 @@
         }, 1000);
       }
 
+      /**
+       * Halts active box breathing cycles and resets visual indicators.
+       */
       stopSession() {
         this.isPlaying = false;
         clearTimeout(this.timer);
@@ -1846,16 +2117,27 @@
         }
       }
 
+      /**
+       * Updates breathing component (none required as self-contained state).
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         // Self-contained logic
       }
     }
 
     // 5B. THEME SELECTOR COMPONENT
+    /**
+     * ThemeComponent manages application theme configuration (Forest vs Ocean themes),
+     * applying visual theme CSS variables and persisting choice.
+     */
     class ThemeComponent {
+      /**
+       * Creates an instance of ThemeComponent.
+       */
       constructor() {
         this.toggleBtn = document.getElementById('btn-theme-toggle');
-        this.currentTheme = localStorage.getItem('aura_theme') || 'forest';
+        this.currentTheme = StorageService.getString(APP_CONFIG.THEME_STORAGE_KEY, 'forest');
         
         // Initial setup
         this.applyTheme(this.currentTheme);
@@ -1866,6 +2148,10 @@
         });
       }
 
+      /**
+       * Applies a visual theme, updating CSS classes on the body element.
+       * @param {string} theme - The theme key ('forest' or 'ocean').
+       */
       applyTheme(theme) {
         if (theme === 'ocean') {
           document.body.classList.remove('theme-forest');
@@ -1878,34 +2164,54 @@
           this.toggleBtn.innerHTML = '🌲 Forest Theme';
           this.toggleBtn.setAttribute('aria-label', 'Toggle theme: current theme Forest Sanctuary. Click to switch.');
         }
-        localStorage.setItem('aura_theme', theme);
+        StorageService.setString(APP_CONFIG.THEME_STORAGE_KEY, theme);
       }
 
+      /**
+       * Updates the theme component (none needed as state persists on DOM/Storage).
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         // Theme states persist on body classes dynamically
       }
     }
 
     // 5C. SOOTHING SOUNDSCAPE CONTROLLER (Web Audio API Synthesizer)
+    /**
+     * SoothingSoundscapeComponent synthesizes dynamic ambient ocean waves and soft chord drones
+     * client-side using Web Audio API nodes.
+     */
     class SoothingSoundscapeComponent {
+      /**
+       * Creates an instance of SoothingSoundscapeComponent.
+       */
       constructor() {
         this.btnPlay = document.getElementById('btn-play-audio');
         this.statusText = document.getElementById('audio-status');
         this.isPlaying = false;
         
+        /** @type {AudioContext|null} */
         this.audioCtx = null;
+        /** @type {AudioBufferSourceNode|null} */
         this.whiteNoiseNode = null;
+        /** @type {GainNode|null} */
         this.gainNode = null;
+        /** @type {OscillatorNode|null} */
         this.lfoNode = null;
+        /** @type {GainNode|null} */
         this.lfoGainNode = null;
+        /** @type {BiquadFilterNode|null} */
         this.filterNode = null;
 
-        // Drone Oscillators
+        /** @type {OscillatorNode[]} */
         this.oscs = [];
 
         this.btnPlay.addEventListener('click', () => this.toggleAudio());
       }
 
+      /**
+       * Toggles audio playback between start and stop.
+       */
       toggleAudio() {
         if (this.isPlaying) {
           this.stopAudio();
@@ -1914,6 +2220,9 @@
         }
       }
 
+      /**
+       * Instantiates the audio graph, synthesizes buffer noise and sine waves, and starts audio playback.
+       */
       startAudio() {
         try {
           if (!this.audioCtx) {
@@ -1932,7 +2241,7 @@
           this.statusText.style.color = 'var(--accent-blue)';
 
           // 1. Generate programmatical Pink/White Noise Buffer
-          const bufferSize = 2 * this.audioCtx.sampleRate;
+          const bufferSize = APP_CONFIG.AUDIO.BUFFER_DURATION * this.audioCtx.sampleRate;
           const noiseBuffer = this.audioCtx.createBuffer(1, bufferSize, this.audioCtx.sampleRate);
           const output = noiseBuffer.getChannelData(0);
           for (let i = 0; i < bufferSize; i++) {
@@ -1946,20 +2255,19 @@
           // 2. Set up Biquad Filter to simulate ocean roaring
           this.filterNode = this.audioCtx.createBiquadFilter();
           this.filterNode.type = 'lowpass';
-          this.filterNode.frequency.value = 350;
-          this.filterNode.Q.value = 1.0;
+          this.filterNode.frequency.value = APP_CONFIG.AUDIO.FILTER_FREQ;
+          this.filterNode.Q.value = APP_CONFIG.AUDIO.FILTER_Q;
 
           // 3. Set up volume Gain Node
           this.gainNode = this.audioCtx.createGain();
-          this.gainNode.gain.value = 0.15;
+          this.gainNode.gain.value = APP_CONFIG.AUDIO.NOISE_GAIN;
 
           // 4. Modulate Filter frequency with LFO
-          // Wave periods of ~12.5 seconds
           this.lfoNode = this.audioCtx.createOscillator();
-          this.lfoNode.frequency.value = 0.08;
+          this.lfoNode.frequency.value = APP_CONFIG.AUDIO.LFO_FREQ;
 
           this.lfoGainNode = this.audioCtx.createGain();
-          this.lfoGainNode.gain.value = 250; // Sweep range (+/- 250Hz)
+          this.lfoGainNode.gain.value = APP_CONFIG.AUDIO.LFO_GAIN; // Sweep range (+/- 250Hz)
 
           this.lfoNode.connect(this.lfoGainNode);
           this.lfoGainNode.connect(this.filterNode.frequency);
@@ -1970,15 +2278,14 @@
           this.gainNode.connect(this.audioCtx.destination);
 
           // 5. Add Low Soothing Drone Oscillators (Sine waves)
-          // A minor chords: A2 (110Hz), E3 (164.8Hz), A3 (220Hz)
-          const frequencies = [110.0, 164.81, 220.0];
+          const frequencies = APP_CONFIG.AUDIO.DRONE_FREQS;
           this.oscs = frequencies.map(freq => {
             const osc = this.audioCtx.createOscillator();
             const oscGain = this.audioCtx.createGain();
             
             osc.type = 'sine';
             osc.frequency.value = freq;
-            oscGain.gain.value = 0.015; // Very quiet background drone
+            oscGain.gain.value = APP_CONFIG.AUDIO.DRONE_GAIN; // Very quiet background drone
             
             osc.connect(oscGain);
             oscGain.connect(this.audioCtx.destination);
@@ -1998,6 +2305,9 @@
         }
       }
 
+      /**
+       * Stops all active audio source nodes and disconnects them.
+       */
       stopAudio() {
         this.isPlaying = false;
         this.btnPlay.textContent = 'Play Waves';
@@ -2033,17 +2343,29 @@
         } catch (e) {}
       }
 
+      /**
+       * Updates the soundscape component (none needed as it is a self-contained controller).
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         // self contained audio controller
       }
     }
 
     // 5D. ADVANCED METRICS & ANALYTICS COMPONENT
+    /**
+     * AnalyticsComponent displays mood statistics, check-in activity grids,
+     * stress triggers distributions, and contextual wellness advice summaries.
+     */
     class AnalyticsComponent {
       constructor() {
         this.container = document.getElementById('analytics-dashboard-content');
       }
 
+      /**
+       * Aggregates stats, updates bar charts and streak grids on state changes.
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         const history = state.get7DayHistory();
         
@@ -2177,11 +2499,19 @@
     }
 
     // 6. HISTORY LOGGED LIST COMPONENT
+    /**
+     * HistoryListComponent lists logged entries in descending chronological order
+     * with their triggers and optional reflection notes.
+     */
     class HistoryListComponent {
       constructor() {
         this.listContainer = document.getElementById('history-entries-list');
       }
 
+      /**
+       * Re-renders the descending list of logged history items on updates.
+       * @param {AuraState} state - The global application state.
+       */
       update(state) {
         const sortedDesc = [...state.entries].sort((a, b) => b.timestamp - a.timestamp);
         
@@ -2195,7 +2525,9 @@
           const formattedDate = rawDate.toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' });
           const config = APP_CONFIG.MOODS[entry.score];
 
-          const miniTags = entry.triggers.map(t => `<span class="mini-tag">${t}</span>`).join('');
+          const miniTags = entry.triggers
+            .filter(t => APP_CONFIG.VALID_TRIGGERS.includes(t))
+            .map(t => `<span class="mini-tag">${escapeHTML(t)}</span>`).join('');
 
           return `
             <div class="history-item">
@@ -2214,7 +2546,11 @@
       }
     }
 
-    // Escape script inputs against markup injections
+    /**
+       * Escapes HTML specific characters to prevent XSS (Cross-Site Scripting).
+       * @param {string} str - Raw input text.
+       * @returns {string} Sanitized text safe for HTML injection.
+       */
     function escapeHTML(str) {
       return str.replace(/[&<>'"]/g, 
         tag => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;' }[tag] || tag)
@@ -2370,6 +2706,31 @@
 
       const capped = state.get7DayHistory();
       assert(capped.length === 7, `History results must slice exactly 7 elements, got: ${capped.length}`);
+    });
+
+    // 5. Exam Context Validation
+    test("Exam context options and error boundaries", () => {
+      const state = new AuraState();
+
+      // Verify that default selection is loaded as "General"
+      assert(state.currentExam === "General", "Default loaded exam should be 'General'");
+
+      // Test allowlisted exams succeed
+      const allowed = ['JEE', 'NEET', 'UPSC', 'CAT', 'GATE', 'General'];
+      allowed.forEach(exam => {
+        state.setExam(exam);
+        assert(state.currentExam === exam, `Setting exam to ${exam} should succeed.`);
+      });
+
+      // Test unallowlisted exam fails
+      let threwError = false;
+      try {
+        state.setExam("INVALID_EXAM_NAME");
+      } catch (err) {
+        threwError = true;
+        assert(err.message.includes("Invalid exam category"), "Rejection error message should be clear.");
+      }
+      assert(threwError, "Setting an unallowed exam category should throw a validation exception.");
     });
 
     // --- EXECUTE RUNNER ---
